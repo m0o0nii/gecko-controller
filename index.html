@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>게코 컨트롤러</title>
+<style>
+:root{--bg:#F4EEDF;--ink:#2B2118;--sub:#6B5A45;--card:#FFFBF2;--line:#E2D6BE;--accent:#2F6B4F;--pad:#3B2A1C;--padOn:#E9A23B;--warn:#B5452C}
+@media (prefers-color-scheme:dark){:root{--bg:#1B1712;--ink:#F1E8D6;--sub:#B9A98E;--card:#262019;--line:#3A3126;--accent:#6FBF93;--pad:#120E0A;--padOn:#E9A23B;--warn:#E07A5F}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif;-webkit-user-select:none;user-select:none}
+main{max-width:460px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.card h2{font-size:14px;margin:0 0 10px;color:var(--sub);font-weight:600}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+button{font:inherit;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:999px;padding:9px 14px;touch-action:manipulation}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button:disabled{opacity:.45}
+.status{font-size:13px;color:var(--sub)}
+.status.ok{color:var(--accent)}.status.err{color:var(--warn)}
+.meter{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px;text-align:center}
+.meter div{background:var(--bg);border-radius:10px;padding:8px 4px}
+.meter b{display:block;font-size:18px;font-variant-numeric:tabular-nums}
+.meter span{font-size:12px;color:var(--sub)}
+.pads{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;background:var(--pad);border-radius:14px;padding:7px;touch-action:none}
+.pad{height:120px;border-radius:10px;background:#5a4330;color:#f1e8d6;display:flex;align-items:center;justify-content:center;font-weight:600}
+.pad.on{background:var(--padOn);color:#2B2118}
+.btns{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.btns button{border-radius:12px;padding:14px 0;font-weight:700;font-size:17px}
+#log{font:12px/1.5 ui-monospace,Menlo,monospace;max-height:180px;overflow:auto;margin:0;white-space:pre-wrap;color:var(--sub)}
+.hint{font-size:12px;color:var(--sub);margin:8px 0 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>게코 컨트롤러</h1>
+
+  <div class="card">
+    <h2>1. 보드 연결</h2>
+    <div class="row">
+      <button class="primary" id="connectBtn">보드 연결</button>
+      <span class="status" id="bleStatus">연결 안 됨</span>
+    </div>
+    <p class="hint">아이폰은 Safari가 아니라 Bluefy 앱에서 열어야 해요.</p>
+  </div>
+
+  <div class="card">
+    <h2>2. 모션 센서 (흔들기 = 먹이, 들고 걷기 = 걸음)</h2>
+    <div class="row">
+      <button id="motionBtn">모션 센서 켜기</button>
+      <span class="status" id="motionStatus">꺼짐</span>
+    </div>
+    <div class="meter">
+      <div><b id="mCls">IDLE</b><span>판정</span></div>
+      <div><b id="mFreq">0.0</b><span>피크 Hz</span></div>
+      <div><b id="mSteps">0</b><span>걸음</span></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="synShake">가상 흔들기</button>
+      <button id="synWalk">가상 10초 걷기</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>3. 등 쓰다듬기 (머리 → 꼬리로 문지르기)</h2>
+    <div class="pads" id="pads">
+      <div class="pad" data-i="0">머리</div>
+      <div class="pad" data-i="1">등</div>
+      <div class="pad" data-i="2">꼬리</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4. 버튼</h2>
+    <div class="btns">
+      <button data-ev="8">A 메뉴</button>
+      <button data-ev="9">B 확인</button>
+      <button data-ev="10">C 뒤로</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>보낸 이벤트</h2>
+    <pre id="log"></pre>
+  </div>
+</main>
+
+<script>
+// ---- 보드와 맞춰야 하는 값: firmware/ble_input.h, firmware/events.h ----
+const SVC = 'd5d80001-7405-4b25-b506-67dd83f018e6';
+const CHR = 'd5d80002-7405-4b25-b506-67dd83f018e6';
+const EV = {SHAKE:1, STEP:2, TILT:3, LIFT:4, STROKE:5, TAP:6, HOLD:7, BTN_A:8, BTN_B:9, BTN_C:10};
+const EV_NAME = Object.fromEntries(Object.entries(EV).map(([k, v]) => [v, k]));
+const STROKE = {slow:0, normal:1, fast:2, against:3};
+const PAD_NAMES = ['머리', '등', '꼬리'];
+
+const $ = id => document.getElementById(id);
+const now = () => performance.now();
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+function log(s) {
+  const el = $('log');
+  const t = new Date().toTimeString().slice(0, 8);
+  el.textContent = `${t} ${s}\n` + el.textContent.split('\n').slice(0, 60).join('\n');
+}
+
+// ================= BLE =================
+let chr = null;
+// Web Bluetooth는 GATT 작업이 겹치면 "operation already in progress"로 실패한다 → 한 줄로 세워서 보낸다
+const sendQueue = [];
+let sending = false;
+
+function setBle(text, cls) { const s = $('bleStatus'); s.textContent = text; s.className = 'status ' + (cls || ''); }
+
+async function connect() {
+  if (!navigator.bluetooth) { setBle('이 브라우저는 Web Bluetooth를 지원하지 않아요 (아이폰은 Bluefy)', 'err'); return; }
+  try {
+    setBle('보드 찾는 중…');
+    const dev = await navigator.bluetooth.requestDevice({filters: [{services: [SVC]}]});
+    dev.addEventListener('gattserverdisconnected', () => { chr = null; setBle('연결 끊김', 'err'); $('connectBtn').disabled = false; });
+    const server = await dev.gatt.connect();
+    chr = await (await server.getPrimaryService(SVC)).getCharacteristic(CHR);
+    setBle(`연결됨: ${dev.name || '보드'}`, 'ok');
+    $('connectBtn').disabled = true;
+  } catch (e) {
+    setBle('연결 실패: ' + e.message, 'err');
+  }
+}
+
+function send(type, ...vals) {
+  const bytes = new Uint8Array([type, ...vals.map(v => v & 0xff)]);
+  const desc = EV_NAME[type] + (vals.length ? ' ' + vals.join(',') : '');
+  if (!chr) { log(`(미연결) ${desc}`); return; }
+  sendQueue.push({bytes, desc});
+  pump();
+}
+
+async function pump() {
+  if (sending) return;
+  sending = true;
+  while (sendQueue.length && chr) {
+    const {bytes, desc} = sendQueue.shift();
+    try {
+      await (chr.writeValueWithoutResponse ? chr.writeValueWithoutResponse(bytes) : chr.writeValue(bytes));
+      log(desc);
+    } catch (e) {
+      log(`실패 ${desc}: ${e.message}`);
+    }
+  }
+  sending = false;
+}
+
+$('connectBtn').onclick = connect;
+
+// ================= 가속도 파이프라인 (ref/gecko-tama-sim.html 그대로) =================
+// 가속도 크기 - 9.81 → 저역통과 → 피크 검출. 걸음: 피크 간격 0.3~1.0s, 진폭 9 미만.
+// 분류(최근 2초): 3Hz 이상 + 진폭 9 이상 = SHAKE, 1.2~2.8Hz + 진폭 1.2~9 = WALK
+const V = {lp: 0, samples: [], peaks: [], above: false, curMax: 0, lastPeakStart: 0, prevPeakStart: 0,
+           freq: 0, amp: 0, cls: 'IDLE', lastShake: 0, lastLift: 0, steps: 0, gotMotion: false,
+           tilt: 0, lastTiltSent: 0, lastTiltT: 0};
+
+function pushDyn(d) {
+  const t = now();
+  V.lp = V.lp * .55 + d * .45;
+  V.samples.push({t, d});
+  while (V.samples.length && t - V.samples[0].t > 4000) V.samples.shift();
+  // 들어올림: 시뮬레이터에선 슬립 중 |d|>3.5 이면 깨움. 폰은 슬립 상태를 모르니
+  // 조용할 때(IDLE)만 3초에 한 번 보낸다 — 흔들기·걷기 중에 LIFT가 쏟아지지 않게
+  if (Math.abs(d) > 3.5 && V.cls === 'IDLE' && t - V.lastLift > 3000) { V.lastLift = t; send(EV.LIFT); }
+  if (!V.above && V.lp > 1.2 && t - V.lastPeakStart > 120) {
+    V.above = true; V.curMax = V.lp; V.prevPeakStart = V.lastPeakStart; V.lastPeakStart = t; V.peaks.push({t});
+  } else if (V.above) {
+    V.curMax = Math.max(V.curMax, V.lp);
+    if (V.lp < .3) {
+      V.above = false;
+      const iv = V.lastPeakStart - V.prevPeakStart;
+      if (V.curMax < 9 && iv >= 300 && iv <= 1000) onStep();
+    }
+  }
+  while (V.peaks.length && t - V.peaks[0].t > 3000) V.peaks.shift();
+}
+
+function onStep() { V.steps++; $('mSteps').textContent = V.steps; send(EV.STEP); }
+
+function classify() {
+  const t = now();
+  V.freq = V.peaks.filter(p => t - p.t <= 2000).length / 2;
+  let a = 0;
+  for (const s of V.samples) if (t - s.t <= 1000) a = Math.max(a, Math.abs(s.d));
+  V.amp = a;
+  V.cls = (V.freq >= 3 && a >= 9) ? 'SHAKE' : (V.freq >= 1.2 && V.freq <= 2.8 && a >= 1.2 && a < 9) ? 'WALK' : 'IDLE';
+  // 흔들기는 1.5초에 한 번만 먹이로 처리 (시뮬레이터 규칙)
+  if (V.cls === 'SHAKE' && t - V.lastShake > 1500) { V.lastShake = t; send(EV.SHAKE, Math.round(V.freq * 10)); }
+  $('mCls').textContent = V.cls;
+  $('mFreq').textContent = V.freq.toFixed(1);
+
+  // 기울기: 5Hz 이하, 10 이상 바뀔 때만 — 매 샘플 보내면 BLE 큐가 밀린다
+  const tv = Math.round(V.tilt * 100);
+  if (V.gotMotion && t - V.lastTiltT > 200 && Math.abs(tv - V.lastTiltSent) >= 10) {
+    V.lastTiltT = t; V.lastTiltSent = tv; send(EV.TILT, tv);
+  }
+}
+setInterval(classify, 50);
+
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity;
+  if (!a || a.x == null) return;
+  if (!V.gotMotion) { V.gotMotion = true; $('motionStatus').textContent = '켜짐: 흔들거나 들고 걸어보세요'; $('motionStatus').className = 'status ok'; }
+  const m = Math.sqrt(a.x * a.x + a.y * a.y + (a.z || 0) * (a.z || 0));
+  // iOS는 안드로이드와 x축 부호가 반대 (시뮬레이터와 동일 처리)
+  const ios = typeof DeviceMotionEvent.requestPermission === 'function';
+  V.tilt = V.tilt * .85 + clamp((ios ? a.x : -a.x) / 9.81, -1, 1) * .15;
+  pushDyn(m - 9.81);
+}
+
+$('motionBtn').onclick = async () => {
+  const st = $('motionStatus');
+  try {
+    if (typeof DeviceMotionEvent === 'undefined') { st.textContent = '모션 센서 미지원. 가상 버튼을 쓰세요'; st.className = 'status err'; return; }
+    // iOS는 사용자 탭 안에서 권한을 요청해야 한다
+    if (typeof DeviceMotionEvent.requestPermission === 'function') {
+      const r = await DeviceMotionEvent.requestPermission();
+      if (r !== 'granted') { st.textContent = '권한 거부됨'; st.className = 'status err'; return; }
+    }
+    window.addEventListener('devicemotion', onMotion);
+    st.textContent = '연결 중… 폰을 살짝 움직여보세요';
+    setTimeout(() => { if (!V.gotMotion) { st.textContent = '센서 값이 안 들어와요. 가상 버튼으로 테스트하세요'; st.className = 'status err'; } }, 2500);
+    $('motionBtn').disabled = true;
+  } catch (err) { st.textContent = '센서를 켤 수 없어요: ' + err.message; st.className = 'status err'; }
+};
+
+// 가상 입력: 시뮬레이터의 synth()와 같은 파형. 센서 없이(예: Mac 크롬) 보드 반응 확인용
+let synthTimer = null;
+function synth(kind) {
+  if (synthTimer) clearInterval(synthTimer);
+  const t0 = now(), dur = kind === 'shake' ? 1400 : 10000;
+  synthTimer = setInterval(() => {
+    const t = (now() - t0) / 1000;
+    if (t * 1000 > dur) { clearInterval(synthTimer); synthTimer = null; return; }
+    const r = (a, b) => a + Math.random() * (b - a);
+    const d = kind === 'shake'
+      ? 13 * Math.sin(2 * Math.PI * 6 * t) + r(-1.5, 1.5)
+      : 2.3 * Math.sin(2 * Math.PI * 1.9 * t) + .6 * Math.sin(2 * Math.PI * 3.8 * t) + r(-.3, .3);
+    pushDyn(d);
+  }, 1000 / 60);
+}
+$('synShake').onclick = () => synth('shake');
+$('synWalk').onclick = () => synth('walk');
+
+// ================= 등 터치 3칸 (시뮬레이터 그대로) =================
+// 한 칸: 900ms 이상 hold, 짧으면 tap. 여러 칸: 꼬리→머리면 against,
+// 머리→꼬리는 전체 길이 환산 시간으로 slow(≥400ms) / normal(≥150ms) / fast
+(function () {
+  const el = $('pads');
+  let seq = null, t0 = 0;
+  const padAt = e => { const n = document.elementFromPoint(e.clientX, e.clientY); const p = n && n.closest ? n.closest('.pad') : null; return p ? +p.dataset.i : -1; };
+  const setOn = i => el.querySelectorAll('.pad').forEach((p, k) => p.classList.toggle('on', k === i));
+  el.addEventListener('pointerdown', e => { e.preventDefault(); try { el.setPointerCapture(e.pointerId); } catch (_) {} const i = padAt(e); if (i < 0) return; t0 = now(); seq = [{i, t: t0}]; setOn(i); });
+  el.addEventListener('pointermove', e => { if (!seq) return; const i = padAt(e); if (i >= 0 && i !== seq[seq.length - 1].i) seq.push({i, t: now()}); setOn(i); });
+  const end = () => {
+    if (!seq) return;
+    const dur = now() - t0, first = seq[0], last = seq[seq.length - 1];
+    setOn(-1);
+    if (seq.length === 1) {
+      send(dur >= 900 ? EV.HOLD : EV.TAP, first.i);
+    } else {
+      const span = Math.abs(last.i - first.i), travel = last.t - first.t, ms = span === 2 ? travel : travel * 2;
+      const kind = last.i < first.i ? 'against' : ms >= 400 ? 'slow' : ms >= 150 ? 'normal' : 'fast';
+      // ms/10을 1바이트로 보내므로 2.55초에서 잘린다 — 판정 경계(400ms)보다 훨씬 길어 문제없음
+      send(EV.STROKE, STROKE[kind], Math.min(255, Math.round(ms / 10)));
+    }
+    seq = null;
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+})();
+
+document.querySelectorAll('.btns button').forEach(b => b.onclick = () => send(+b.dataset.ev));
+</script>
+</body>
+</html>
